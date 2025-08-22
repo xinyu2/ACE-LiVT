@@ -22,7 +22,7 @@ import torch.backends.cudnn as cudnn
 from torch.utils.tensorboard import SummaryWriter
 
 import timm
-assert timm.__version__ == "0.3.2" # version check
+# assert timm.__version__ == "0.3.2" # version check
 from timm.models.layers import trunc_normal_
 from timm.data.mixup import Mixup
 
@@ -34,8 +34,8 @@ from util.misc import NativeScalerWithGradNormCount as NativeScaler
 from util.loss import *
 from models import vit
 
-from engine_finetune import train_one_epoch, evaluate
-from engine_finetune import evaluate_all_metric
+from engine_finetune_cam import train_one_epoch, evaluate
+from engine_finetune_cam import evaluate_all_metric
 
 import warnings
 warnings.filterwarnings('ignore')
@@ -168,6 +168,10 @@ def get_args_parser():
     parser.add_argument('--dist_url', default='env://',
                         help='url used to set up distributed training')
 
+    # * CAM parameters
+    parser.add_argument('--method', default='eigencam', type=str, help='CAM method')
+    parser.add_argument('--eigen_smooth', action='store_true', help='Reduce noise by taking the first principle componenet of cam_weights*activations')
+    parser.add_argument('--aug_smooth', action='store_true', help='Apply test time augmentation to smooth the CAM')
 
     return parser
 
@@ -187,7 +191,6 @@ def main(args):
     cudnn.benchmark = True
 
     dataset_train = build_dataset(is_train=True, args=args)
-
     dataset_val = build_dataset(is_train=False, args=args)
 
     if True:  # args.distributed:
@@ -257,12 +260,12 @@ def main(args):
         # load pre-trained model
         msg = model.load_state_dict(checkpoint_model, strict=False)
         P.log(msg)
-
+        
         if args.global_pool:
             assert set(msg.missing_keys) == {'head.weight', 'head.bias', 'fc_norm.weight', 'fc_norm.bias'}
         else:
             assert set(msg.missing_keys) == {'head.weight', 'head.bias'}
-
+         
         # manually initialize fc layer
         trunc_normal_(model.head.weight, std=2e-5)
 
@@ -330,7 +333,6 @@ def main(args):
         elif args.loss == 'Bal_BCE': criterion = BCE_loss(args, type='Bal')
         elif args.loss == 'MiSLAS': criterion = MiSLAS_loss(args)
         elif args.loss == 'LDAM': criterion = LDAM_loss(args)
-        # elif args.loss == 'ace': criterion = ACE_loss(args)
     else:
         if args.loss == 'CE': criterion = torch.nn.CrossEntropyLoss()
         elif args.loss == 'LS_CE': criterion = LS_CE_loss(smoothing=args.smoothing)

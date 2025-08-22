@@ -26,6 +26,33 @@ import util.lr_sched as lr_sched
 
 from tqdm import tqdm
 
+from pytorch_grad_cam import GradCAM, \
+    ScoreCAM, \
+    GradCAMPlusPlus, \
+    AblationCAM, \
+    XGradCAM, \
+    EigenCAM, \
+    EigenGradCAM, \
+    LayerCAM, \
+    FullGrad
+
+from pytorch_grad_cam import GuidedBackpropReLUModel
+from pytorch_grad_cam.utils.image import show_cam_on_image, \
+    preprocess_image
+from pytorch_grad_cam.ablation_layer import AblationLayerVit
+import pickle
+
+methods = \
+        {"gradcam": GradCAM,
+         "scorecam": ScoreCAM,
+         "gradcam++": GradCAMPlusPlus,
+         "ablationcam": AblationCAM,
+         "xgradcam": XGradCAM,
+         "eigencam": EigenCAM,
+         "eigengradcam": EigenGradCAM,
+         "layercam": LayerCAM,
+         "fullgrad": FullGrad}
+
 def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
                     data_loader: Iterable, optimizer: torch.optim.Optimizer,
                     device: torch.device, epoch: int, loss_scaler, max_norm: float = 0,
@@ -182,10 +209,35 @@ def calibration(preds, labels, confidences, num_bins=15):
              "expected_calibration_error": ece,
              "max_calibration_error": mce }
 
+def reshape_transform(tensor, height=14, width=14):
+    result = tensor[:, 1:, :].reshape(tensor.size(0),
+                                      height, width, tensor.size(2))
+
+    # Bring the channels to the first dimension,
+    # like in CNNs.
+    result = result.transpose(2, 3).transpose(1, 2)
+    return result
+
+def dumpPickle(cams, args):
+    out_dir = os.path.join('exp', 'cam')
+    pname=f'{args.dataset}-{args.method}.pickle'
+    pickle_out = open(os.path.join(out_dir,pname),"wb")
+    pickle.dump(cams, pickle_out, protocol=4)
+    pickle_out.close()
+
+def dumpLabels(lbls, args):
+    out_dir = os.path.join('exp', 'lbl')
+    pname=f'{args.dataset}-{args.method}-lbls.pickle'
+    pickle_out = open(os.path.join(out_dir,pname),"wb")
+    pickle.dump(lbls, pickle_out, protocol=4)
+    pickle_out.close()    
 
 @torch.no_grad()
 def evaluate_all_metric(data_loader, model, device, args):
-    print("mode is ", model.blocks[-1].norm1)
+    target_layers = [model.module.blocks[-1].norm1]
+
+    cam = methods[args.method](model=model, target_layers=target_layers,
+                                   reshape_transform=reshape_transform)
     model.eval()
     nClasses = args.nb_classes
     shot = get_shot(args.cls_num)
@@ -196,17 +248,36 @@ def evaluate_all_metric(data_loader, model, device, args):
     predList = np.array([])
     cfdsList = np.array([])
     grndList = np.array([])
+    camList = []
+
+    batch_idx = 0
     for images, labels in tqdm(data_loader):
-        with torch.no_grad():
-            images = images.to(device)
-            labels = labels.type(torch.long).view(-1).numpy()
-            logits = model(images)
-            cfds, preds = F.softmax(logits.detach(), dim=1).max(dim=1)
-            cfds = cfds.detach().squeeze().cpu().numpy()
-            preds = preds.detach().squeeze().cpu().numpy()
-            cfdsList = np.concatenate((cfdsList, cfds))
-            predList = np.concatenate((predList, preds))
-            grndList = np.concatenate((grndList, labels))
+        # if batch_idx  == 0:
+        #     print(f"images={type(images)}\tlabels={labels}")
+        # with torch.no_grad():
+        images = images.to(device)
+        labels = labels.type(torch.long).view(-1).numpy()
+        logits = model(images)
+        
+        # cam_targets = None
+        # cam.batch_size = 32
+        # grayscale_cam = cam(input_tensor=images, targets=cam_targets,
+        #                 eigen_smooth=args.eigen_smooth, aug_smooth=args.aug_smooth)
+        # camList.append(grayscale_cam)
+        # if batch_idx == 0:
+        #     print(f"grayscale-cam={type(grayscale_cam)}\t{grayscale_cam.shape}")
+
+        cfds, preds = F.softmax(logits.detach(), dim=1).max(dim=1)
+        cfds = cfds.detach().squeeze().cpu().numpy()
+        preds = preds.detach().squeeze().cpu().numpy()
+        cfdsList = np.concatenate((cfdsList, cfds))
+        predList = np.concatenate((predList, preds))
+        grndList = np.concatenate((grndList, labels))
+        batch_idx += 1    
+
+    # dumpPickle(camList, args)
+    all_labels = {"shot": shot, "gt": grndList}
+    dumpLabels(all_labels, args)
 
     cali = calibration(predList, grndList, cfdsList, num_bins=15)
     ece = cali['expected_calibration_error']

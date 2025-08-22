@@ -20,25 +20,30 @@ from pathlib import Path
 import torch
 import torch.backends.cudnn as cudnn
 from torch.utils.tensorboard import SummaryWriter
+from torchvision import transforms
 
 import timm
-assert timm.__version__ == "0.3.2" # version check
+# assert timm.__version__ == "0.3.2" # version check
 from timm.models.layers import trunc_normal_
 from timm.data.mixup import Mixup
-
+from autoaugment import Randpepperpost
 import util.lr_decay as lrd
 import util.misc as misc
-from util.datasets import build_dataset
+from util.datasets import DatasetLT, combine_Datasets
+from util.datasets import build_dataset, build_transform
 from util.pos_embed import interpolate_pos_embed
 from util.misc import NativeScalerWithGradNormCount as NativeScaler
 from util.loss import *
 from models import vit
 
-from engine_finetune import train_one_epoch, evaluate
-from engine_finetune import evaluate_all_metric
+from engine_finetune_cam import train_one_epoch, evaluate
+from engine_finetune_cam import evaluate_all_metric
 
 import warnings
 warnings.filterwarnings('ignore')
+
+DATA_PATH = '/data/lab/yan/xinyu/DATA'
+IMAGENET_LT_PATH = os.path.join(DATA_PATH, 'ImageNet-LT')
 
 def get_args_parser():
     parser = argparse.ArgumentParser('MAE fine-tuning for image classification', add_help=False)
@@ -82,6 +87,9 @@ def get_args_parser():
                         help='Use AutoAugment policy. "v0" or "original". " + "(default: rand-m9-mstd0.5-inc1)'),
     parser.add_argument('--smoothing', type=float, default=0.0,
                         help='Label smoothing (default: 0.1)')
+    parser.add_argument('--alpha', type=int, default=16, help='alpha-composite strength')
+    parser.add_argument('--sl', type=float, default=0.04, help='min perturbed area')
+    parser.add_argument('--sh', type=float, default=0.40, help='max perturbed area')
 
     # * Random Erase params
     parser.add_argument('--reprob', type=float, default=0.25, metavar='PCT',
@@ -168,6 +176,10 @@ def get_args_parser():
     parser.add_argument('--dist_url', default='env://',
                         help='url used to set up distributed training')
 
+    # * CAM parameters
+    parser.add_argument('--method', default='eigencam', type=str, help='CAM method')
+    parser.add_argument('--eigen_smooth', action='store_true', help='Reduce noise by taking the first principle componenet of cam_weights*activations')
+    parser.add_argument('--aug_smooth', action='store_true', help='Apply test time augmentation to smooth the CAM')
 
     return parser
 
@@ -186,9 +198,29 @@ def main(args):
     np.random.seed(seed)
     cudnn.benchmark = True
 
-    dataset_train = build_dataset(is_train=True, args=args)
+    transform = build_transform(True, args)
+    transform_train_rpp = transforms.Compose([transform,Randpepperpost(sl=args.sl, sh=args.sh, alpha=args.alpha)])
+    if args.dataset == 'ImageNet-LT': # ImageNet-LT
+        Img_Norm = transforms.Normalize(mean=[0.479672, 0.457713, 0.407721], std=[0.278976, 0.271203, 0.286062])
+    elif args.dataset == 'iNat18': # iNat18
+        Img_Norm = transforms.Normalize(mean=[0.466, 0.471, 0.380], std=[0.195, 0.194, 0.192])
+    elif args.dataset == 'ImageNet-BAL': # ImageNet-BAL
+        Img_Norm = transforms.Normalize(mean=[0.480767, 0.457071, 0.407718], std=[0.279940, 0.272481, 0.286038])
+    else: # ImageNet
+        Img_Norm = transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
 
+    transform_train_rpp = transforms.Compose([
+            transform,
+            Randpepperpost(sl=args.sl, sh=args.sh, alpha=args.alpha),
+            Img_Norm
+        ])
+    args.data_path = IMAGENET_LT_PATH
+    dataset_train_rpp = DatasetLT(os.path.join(args.data_path, 'train'), transform=transform_train_rpp)
+
+    dataset_train_ori = build_dataset(is_train=True, args=args)
     dataset_val = build_dataset(is_train=False, args=args)
+
+    dataset_train = combine_Datasets(dataset_train_ori, dataset_train_rpp)
 
     if True:  # args.distributed:
         num_tasks = misc.get_world_size()
@@ -257,12 +289,12 @@ def main(args):
         # load pre-trained model
         msg = model.load_state_dict(checkpoint_model, strict=False)
         P.log(msg)
-
+        
         if args.global_pool:
             assert set(msg.missing_keys) == {'head.weight', 'head.bias', 'fc_norm.weight', 'fc_norm.bias'}
         else:
             assert set(msg.missing_keys) == {'head.weight', 'head.bias'}
-
+         
         # manually initialize fc layer
         trunc_normal_(model.head.weight, std=2e-5)
 
@@ -330,7 +362,6 @@ def main(args):
         elif args.loss == 'Bal_BCE': criterion = BCE_loss(args, type='Bal')
         elif args.loss == 'MiSLAS': criterion = MiSLAS_loss(args)
         elif args.loss == 'LDAM': criterion = LDAM_loss(args)
-        # elif args.loss == 'ace': criterion = ACE_loss(args)
     else:
         if args.loss == 'CE': criterion = torch.nn.CrossEntropyLoss()
         elif args.loss == 'LS_CE': criterion = LS_CE_loss(smoothing=args.smoothing)

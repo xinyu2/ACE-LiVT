@@ -97,6 +97,7 @@ class BCE_loss(nn.Module):
         return target
 
     def forward(self, x: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+        # print(f"*** x: {type(x)} / {x.shape}, target: {type(target)} / {target.shape}")
         assert x.shape[0] == target.shape[0]
         if target.shape != x.shape:
             target = self._one_hot(x, target)
@@ -111,6 +112,41 @@ class BCE_loss(nn.Module):
                     x, target, weight, self.pos_weight,
                     reduction=self.reduction)
 
+class ACE_loss(nn.Module):
+    '''
+        Paper: https://arxiv.org/abs/2007.07314
+        Code: https://github.com/google-research/google-research/tree/master/logit_adjustment
+    '''
+    def __init__(self, args):
+        super(ACE_loss, self).__init__()
+        mask = self.get_mask(args.cls_num, args.nb_classes, args.L1, args.L2, args.L3)
+        mask = mask.to(args.device)
+        self.mask =mask
+        self.f0 = args.f0
+
+    def get_mask(self, cls_num_list, ncls, l1, l2, l3):
+        mask = torch.eye(ncls, dtype=torch.float16, requires_grad=False)
+        for k in range(ncls):
+            if cls_num_list[k]>=100:
+                mask[k,k] = l1
+            elif cls_num_list[k]>=20:
+                mask[k,k] = l2
+            else:
+                mask[k,k] = l3
+        return mask
+
+    def forward(self, output_logits: torch.Tensor, target: torch.Tensor) -> torch.Tensor: # output is logits
+        probs = F.softmax(output_logits, dim=1) # f(x_i) Bs x K
+        f = self.f0 - torch.multiply(probs, target).sum(dim=1) # Bs x 1
+        z = torch.zeros_like(f) # 1 x Bs
+        zf = torch.vstack((z, f)) # 2 x Bs
+        h = torch.max(zf , dim=0).values # 1 x Bs
+        tmp = torch.matmul(target, self.mask).sum(dim=1) 
+        lamdah = 1 + tmp * h #  1 x Bs
+        ce = F.cross_entropy(output_logits, target, reduction='none') # 1 x Bs
+        ace1 = (lamdah * ce)
+        ace1 = ace1.mean()
+        return ace1
 
 class LS_CE_loss(nn.Module):
     """

@@ -19,7 +19,16 @@ import json
 
 import torch
 import torch.distributed as dist
-from torch._six import inf
+
+TORCH_MAJOR = int(torch.__version__.split('.')[0])
+TORCH_MINOR = int(torch.__version__.split('.')[1])
+
+if TORCH_MAJOR == 2:
+    from torch import inf
+else:
+    from torch._six import inf
+
+
 
 
 class SmoothedValue(object):
@@ -266,6 +275,7 @@ def init_distributed_mode(args):
         args.distributed = False
         return
 
+    print(f"args={args.gpu}")    
     args.distributed = True
     torch.cuda.set_device(args.gpu)
     args.dist_backend = 'nccl'

@@ -1,11 +1,13 @@
 import os
 import sys
+import torch
 sys.path.append("..")
 sys.path.append(os.getcwd())
 
-DATA_PATH = '/home/hfx/DATA'
-WORK_PATH = '/home/hfx/LiVT'
+DATA_PATH = '/data/lab/yan/xinyu/DATA'
+WORK_PATH = '/data/lab/yan/xinyu/ACE-LiVT'
 
+# IMAGENET_LT_PATH = os.path.join(DATA_PATH, 'ImageNet_LT')
 IMAGENET_LT_PATH = os.path.join(DATA_PATH, 'ImageNet-LT')
 IMAGENET_BAL_PATH = os.path.join(DATA_PATH, 'ImageNet-BAL')
 INAT18_PATH = os.path.join(DATA_PATH, 'iNat18')
@@ -14,6 +16,9 @@ CIFAR10_PATH = os.path.join(DATA_PATH)
 CIFAR100_PATH = os.path.join(DATA_PATH)
 EXP_PATH = os.path.join(WORK_PATH, 'exp')
 
+
+TORCH_MAJOR = int(torch.__version__.split('.')[0])
+TORCH_MINOR = int(torch.__version__.split('.')[1])
 
 class Trainer():
     def __init__(self,) -> None:
@@ -28,7 +33,7 @@ class Trainer():
         
         self.batch = 256 # Adapt to your GPU Memory
         self.accum_iter = 4 # eff_batch = batch * GPUs * accum_iter
-        self.device = '0,1,2,3'
+        self.device = '0,1'
         
         self.model = 'mae_vit_base_patch16' # different in MGP and BFT stage
         self.resume = '' 
@@ -112,6 +117,7 @@ class Trainer():
         log_dir = os.path.join(WORK_PATH, f'exp/{task}/{self.dataset}/{note}')
         ckpt_dir = os.path.join(WORK_PATH, f'ckpt/{task}/{self.dataset}/{note}')
         exe_file = os.path.join(WORK_PATH, 'main_pretrain.py')
+        # exe_file = os.path.join(WORK_PATH, 'main_pretrain_rp.py')
         os.system(f'''python -m torch.distributed.launch \
                     --nproc_per_node={nodes} \
                     --master_port {self.master_port} \
@@ -143,7 +149,12 @@ class Trainer():
         data_path = self.get_data_path()
         log_dir = os.path.join(WORK_PATH, f'exp/{self.task}/{self.dataset}/{self.model}/{self.note}')
         ckpt_dir = os.path.join(WORK_PATH, f'ckpt/{self.task}/{self.dataset}/{self.model}/{self.note}')
-        exe_file = os.path.join(WORK_PATH, 'main_finetune.py')
+        if TORCH_MAJOR == 2:
+            exe_file = os.path.join(WORK_PATH, f'main_finetune_rp.py')
+            # exe_file = os.path.join(WORK_PATH, f'main_finetune_h100.py')
+        else:
+            exe_file = os.path.join(WORK_PATH, f'main_finetune.py')        
+        
         attn_only = '--attn_only' if self.attn_only else ''
         cls_type = '--global_pool' if self.global_pool else '--cls_token'
 
@@ -191,7 +202,11 @@ class Trainer():
         nodes = len(self.device.split(','))
         data_path = self.get_data_path()
         log_dir = os.path.join(WORK_PATH, f'exp/{task}/{self.dataset}/{note}')
-        exe_file = os.path.join(WORK_PATH, 'main_finetune.py')
+        # exe_file = os.path.join(WORK_PATH, 'main_finetune.py')
+        if TORCH_MAJOR == 2:
+            exe_file = os.path.join(WORK_PATH, f'main_finetune_h100.py')
+        else:
+            exe_file = os.path.join(WORK_PATH, f'main_finetune.py') 
         attn_only = '--attn_only' if self.attn_only else ''
         cls_type = '--global_pool' if self.global_pool else '--cls_token'
 

@@ -28,7 +28,7 @@ import timm.optim.optim_factory as optim_factory
 
 import util.misc as misc
 from util.misc import NativeScalerWithGradNormCount as NativeScaler
-from util.datasets import DatasetLT, combine_Dataset_mf
+from util.datasets import DatasetLT, combine_Dataset
 
 from models import mae
 
@@ -102,13 +102,14 @@ def get_args_parser():
     # * Distributed training parameters
     parser.add_argument('--world_size', default=1, type=int,
                         help='number of distributed processes')
-    parser.add_argument('--local-rank', default=-1, type=int)
+    parser.add_argument('--local_rank', default=-1, type=int)
     parser.add_argument('--dist_on_itp', action='store_true')
     parser.add_argument('--dist_url', default='env://',
                         help='url used to set up distributed training')
 
     return parser
-    
+
+
 def main(args):
     misc.init_distributed_mode(args)
     P = misc.Printer(os.path.join(args.log_dir, "log.txt"))
@@ -140,7 +141,13 @@ def main(args):
             transforms.ToTensor(),
             Img_Norm])
             
-    dataset_train = DatasetLT(os.path.join(args.data_path, 'train'), transform=transform_train)
+    dataset_train_ori = DatasetLT(os.path.join(args.data_path, 'train'), transform=transform_train)
+    if args.dataset == 'ImageNet-LT':
+        dataset_train_sam = DatasetLT(os.path.join(sam_imagenet_root, 'train'), transform=transform_train)
+        dataset_train = combine_Dataset(dataset_train_ori, dataset_train_sam)
+    else:   # TODO: add masked samples for Inaturalist
+        dataset_train_sam = DatasetLT(os.path.join(sam_inaturalist_root, 'train'), transform=transform_train)
+        dataset_train = combine_Dataset(dataset_train_ori, dataset_train_sam)
     P.log(dataset_train)
 
     if True:  # args.distributed:
@@ -194,9 +201,8 @@ def main(args):
         model_without_ddp = model.module
     
     # following timm: set wd as 0 for bias and norm layers
-    # param_groups = optim_factory.add_weight_decay(model_without_ddp, args.weight_decay)
-    # optimizer = torch.optim.AdamW(param_groups, lr=args.lr, betas=(0.9, 0.95))
-    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, betas=(0.9, 0.95), weight_decay=args.weight_decay)
+    param_groups = optim_factory.add_weight_decay(model_without_ddp, args.weight_decay)
+    optimizer = torch.optim.AdamW(param_groups, lr=args.lr, betas=(0.9, 0.95))
     P.log(optimizer)
     loss_scaler = NativeScaler()
 

@@ -21,14 +21,14 @@ import torch.backends.cudnn as cudnn
 from torch.utils.tensorboard import SummaryWriter
 import torchvision.transforms as transforms
 import torchvision.datasets as datasets
-
+from autoaugment import Randpepperpost
 import timm
 # assert timm.__version__ == "0.3.2"  # version check
 import timm.optim.optim_factory as optim_factory
 
 import util.misc as misc
 from util.misc import NativeScalerWithGradNormCount as NativeScaler
-from util.datasets import DatasetLT, combine_Dataset_mf
+from util.datasets import DatasetLT, combine_Datasets
 
 from models import mae
 
@@ -38,7 +38,6 @@ import warnings
 warnings.filterwarnings('ignore')
 
 sam_imagenet_root = '/data/lab/yan/xinyu/data/ImageNet_LT_masked'
-sam_inaturalist_root = '/data/lab/yan/xinyu/data/iNaturalist18_masked'
 
 def get_args_parser():
     parser = argparse.ArgumentParser('MAE pre-training', add_help=False)
@@ -77,6 +76,11 @@ def get_args_parser():
     parser.add_argument('--data_path', default='/diskC/xzz/ImageNet-LT', type=str,
                         help='dataset path')
 
+    # * Augmentation parameters
+    parser.add_argument('--alpha', type=int, default=1, help='alpha-composite strength')
+    parser.add_argument('--sl', type=float, default=0.02, help='min perturbed area')
+    parser.add_argument('--sh', type=float, default=0.20, help='max perturbed area')
+
     # * File parameters
     parser.add_argument('--ckpt_dir', default='./ckpt',
                         help='path where to save, empty for no saving')
@@ -108,7 +112,8 @@ def get_args_parser():
                         help='url used to set up distributed training')
 
     return parser
-    
+
+
 def main(args):
     misc.init_distributed_mode(args)
     P = misc.Printer(os.path.join(args.log_dir, "log.txt"))
@@ -139,8 +144,17 @@ def main(args):
             transforms.RandomHorizontalFlip(),
             transforms.ToTensor(),
             Img_Norm])
+
+    transform_train_rpp = transforms.Compose([
+            transforms.RandomResizedCrop(args.input_size, scale=(0.2, 1.0), interpolation=3),
+            transforms.RandomHorizontalFlip(),
+            transforms.ToTensor(),
+            Randpepperpost(sl=args.sl, sh=args.sh, alpha=args.alpha),
+            Img_Norm])
             
-    dataset_train = DatasetLT(os.path.join(args.data_path, 'train'), transform=transform_train)
+    dataset_train_ori = DatasetLT(os.path.join(args.data_path, 'train'), transform=transform_train)
+    dataset_train_rpp = DatasetLT(os.path.join(args.data_path, 'train'), transform=transform_train_rpp)
+    dataset_train = combine_Datasets(dataset_train_ori, dataset_train_rpp)
     P.log(dataset_train)
 
     if True:  # args.distributed:

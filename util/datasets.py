@@ -13,10 +13,11 @@ import PIL
 import torch
 import torchvision
 import numpy as np
+from torch.utils.data import Dataset
 from torchvision import datasets, transforms
 from timm.data import create_transform
 from timm.data.constants import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
-
+from PIL import Image
 
 class CIFAR10_LT(torchvision.datasets.CIFAR10):
     cls_num = 10
@@ -135,6 +136,30 @@ def build_dataset(is_train, args):
     print(dataset)
     return dataset
 
+def build_dataset2(is_train, mask_root, args):
+    transform = build_transform(is_train, args)
+    if args.dataset == 'cifar10-LT':
+        dataset = CIFAR10_LT(root=args.data_path,
+                            imb_type='exp',
+                            imb_factor=1/args.imbf,
+                            rand_number=0,
+                            train=is_train,
+                            download=True,
+                            transform=transform)
+    elif args.dataset == 'cifar100-LT':
+        dataset = CIFAR100_LT(root=args.data_path,
+                            imb_type='exp',
+                            imb_factor=1/args.imbf,
+                            rand_number=0,
+                            train=is_train,
+                            download=True,
+                            transform=transform)
+    else:
+        root = os.path.join(mask_root, 'train')
+        dataset = DatasetLT(root, transform=transform)
+    print(dataset)
+    return dataset
+
 def get_mean_std(args):
     mean = IMAGENET_DEFAULT_MEAN
     std = IMAGENET_DEFAULT_STD
@@ -192,6 +217,147 @@ def build_transform(is_train, args):
     ])
     return test_transform
 
+
+class combine_Dataset(Dataset):
+
+    def __init__(self, ds1, ds2):
+        self.img_path = []
+        self.labels = []
+        self.transform = ds1.transform
+        for img in ds1.imgs:
+            p = img[0]
+            if '._' in p:
+                p = ''.join(p.split('._'))
+            self.img_path.append(p)
+
+        for img in ds2.imgs:
+            p = img[0]
+            if '._' in p:
+                p = ''.join(p.split('._'))
+            self.img_path.append(p)    
+
+        self.labels = ds1.targets + ds2.targets
+        cls_num = [0] * len(ds1.classes)
+        for img in ds1.imgs:
+            cls_num[img[1]] += 1
+        self.cls_num = cls_num
+    
+    def get_cls_num(self):
+        return self.cls_num
+
+    def __len__(self):
+        return len(self.labels)
+        
+    def __getitem__(self, index):
+
+        path = self.img_path[index]
+        label = self.labels[index]
+        
+        with open(path, 'rb') as f:
+            sample = Image.open(f).convert('RGB')
+        
+        if self.transform is not None:
+            sample = self.transform(sample)
+
+        return sample, label
+
+class combine_Datasets(Dataset):
+
+    def __init__(self, ds1, ds2):
+        self.img_path = []
+        self.labels = []
+        self.transform = [None, ds1.transform, ds2.transform]
+        for img in ds1.imgs:
+            p = img[0]
+            if '._' in p:
+                p = ''.join(p.split('._'))
+            self.img_path.append((1, p))
+
+        self.labels = ds1.targets
+
+        cls_num = [0] * len(ds1.classes)
+        for img in ds1.imgs:
+            cls_num[img[1]] += 1
+        self.cls_num = cls_num
+
+        for idx, img in enumerate(ds2.imgs):
+            p, lbl = img[0], img[1]
+            if '._' in p:
+                p = ''.join(p.split('._'))
+            self.img_path.append((2,p))
+            self.labels.append(lbl)
+        
+    
+    def get_cls_num(self):
+        return self.cls_num
+
+    def __len__(self):
+        return len(self.labels)
+        
+    def __getitem__(self, index):
+
+        (ds_idx, path) = self.img_path[index]
+        label = self.labels[index]
+        
+        with open(path, 'rb') as f:
+            sample = Image.open(f).convert('RGB')
+        
+        if self.transform is not None:
+            sample = self.transform[ds_idx](sample)
+
+        return sample, label
+
+class combine_Dataset_mf(Dataset):
+
+    def __init__(self, ds1, ds2):
+        self.img_path = []
+        self.labels = []
+        self.transform = ds1.transform
+        for img in ds1.imgs:
+            p = img[0]
+            if '._' in p:
+                p = ''.join(p.split('._'))
+            self.img_path.append(p)
+
+        self.labels = ds1.targets
+
+        cls_num = [0] * len(ds1.classes)
+        for img in ds1.imgs:
+            cls_num[img[1]] += 1
+        self.cls_num = cls_num
+
+        tmp_cls_num = np.array(cls_num)
+        many_shot = tmp_cls_num > 100
+        medium_shot = (tmp_cls_num <= 100) & (tmp_cls_num > 20)
+        few_shot = tmp_cls_num <= 20
+
+        for idx, img in enumerate(ds2.imgs):
+            p, lbl = img[0], img[1]
+            if '._' in p:
+                p = ''.join(p.split('._'))
+            if medium_shot[lbl] | few_shot[lbl]:
+                self.img_path.append(p)
+                self.labels.append(lbl)
+        
+    
+    def get_cls_num(self):
+        return self.cls_num
+
+    def __len__(self):
+        return len(self.labels)
+        
+    def __getitem__(self, index):
+
+        path = self.img_path[index]
+        label = self.labels[index]
+        
+        with open(path, 'rb') as f:
+            sample = Image.open(f).convert('RGB')
+        
+        if self.transform is not None:
+            sample = self.transform(sample)
+
+        return sample, label
 
 if __name__ == '__main__':
     dataset_train = DatasetLT(os.path.join('/diskC/xzz/ImageNet-LT', 'train'), transform=None)
